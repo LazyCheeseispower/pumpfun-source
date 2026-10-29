@@ -18,11 +18,14 @@ noise that dominates `exact` while the frame layout differs.
 | t1 cap before trade_amount | 19,032 | 108 | clone 11 vs 10 | 0.2186 | 0.5702 | 0.6190 |
 | t2 + early seeds, clone-free validate | 18,456 | 107 | **none** | 0.1461 | 0.5445 | 0.6828 |
 | v546b + if/else-if `buy` at :546 | 18,504 | 107 | none | 0.1319 | 0.5968 | 0.6499 |
-| **v546btB + completion nested after TradeEvent** (in source) | 18,360 | 107 | none | 0.1456 | **0.6436** | **0.7378** |
+| v546btB + completion nested after TradeEvent (PR v1) | 18,360 | 107 | none | 0.1456 | 0.6436 | 0.7378 |
+| w1 + post_out join, user key hoisted | 18,360 | 107 | none | 0.1456 | 0.6476 | 0.7396 |
+| br1 + per-arm transfer/apply/payout | 18,336 | 107 | none | 0.1457 | 0.6555 | 0.7392 |
+| **br3 + TradeFees as an arm-result element** (in source) | 18,376 | 107 | none | 0.0915 | **0.6574** | 0.7370 |
 
 Official score of every build: normalized 1020 / raw 188 vs the d2cb88d baseline (gain 0x14f4e0
-is main's), losses none. In-source build unstripped sha256
-`ce6750f6768ac9f9d41e3bc37db8716a8dd58afe54be4b549f08d3e6f4c92cd2`.
+is main's), losses none. In-source build (br3) unstripped sha256
+`8c4483af3d99afaa20a761fbb841a854caeac5c283aa93765081a2014d772702`.
 
 The exact ratio falls because the stack frame shifted (every `[r10 - X]` differs); the call
 sequence, error-site order, closure order and block order are all much closer.
@@ -50,6 +53,16 @@ closures in original physical order are 571, 673, 692, 589, 744, 624, 736.
    post-complete emission is nested inside the completion branch and the complete flag is written
    after the TradeEvent. (TradeEvent does not read `complete`.)
 
+6. Buy arm (orig 0x2848, 0x2b58, 0x2c30): no `capped = min(..)`; the over-reserves arm yields
+   `real_token_reserves` plus `post.base_out` (0 when `complete_fill` returns None, and 0 on the
+   base <= reserves path) into one join doing `checked_add` (the :624 closure). `a.user.key()` and the
+   global pointer are loaded before the mayhem test (0x22c0), so the memcmp block is 9 insns.
+7. Each arm ends with its own transfer, apply and payout, then the join computes the transfer-fee
+   difference (`r8 - [a70]` sell, `[a78] - r9` buy) and stores post_fill = None on the sell side.
+8. The accrue_fees join copies a 64-byte aggregate whose first 32 bytes are
+   `TradeFees{pf, cf, p_bps, c_bps}` (accrue_fees r4/r5 come from it) and trade_event's `fees`
+   pointer is that copy (-0x730): the arms return a TradeFees value.
+
 ## Trials (ledger dedupe keys `0x5b3b0-main-016a11c-<key>-v1`)
 
 | trial | key | result |
@@ -64,12 +77,21 @@ closures in original physical order are 571, 673, 692, 589, 744, 624, 736.
 | v546ctB | completion-nested-on-base-first-require | exact 0.2115 but op 0.709 (979c910a) |
 | ck1 | admit-vaults-single-curve-key-binding | admit region aligns insn-for-insn but native require_ata block moves and 43 insns of cleanup merge: 18,016 B; not kept (82610c19) |
 | ck2/ck3 | admit-vaults-native-first-branch | byte-identical to their bases (e3ceca87) |
+| mid1 | buy-post-out-join-checked-add-624 | opregs 0.6467 (1bb84685) |
+| w1 | whitelist-check-user-key-hoisted | memcmp block 9 insns as orig, kept (14fadab4) |
+| w2/w3 | whitelist-check-operands-swapped / negated-or | no change / identical (f6d2b86c, 5515fca6) |
+| br1 | per-branch-transfer-apply-payout | opregs 0.6555, kept (91047878) |
+| br2 | post-fill-as-branch-tuple-element | 18,616 B but op 0.687; not kept (d0950ac5) |
+| br3 | trade-fees-struct-in-branch-tuple | opregs 0.6574, 590/599 sites separate, kept (1e4eab9e) |
+| br3b | complete-fill-fees-bps-into-tuple | no gain, changes semantics (0a245ba2) |
 
 ## Remaining large regions (opregs alignment, v546btB)
 
-- orig 0x2430 (+98 insns) / ours 0x21e8 (+71) and orig 0x29a0 (+85) / ours 0x2880 (+82): the
-  buy-branch block order between `transfer_quote_out` and `complete_fill` (orig: 589 closure, 599
-  error, accrue_fees x2 ... 744, 590 error, 624 closure, transfer_input, memcmp, complete_fill, 736).
+- Buy-arm block placement: orig lays the buy chain (589 test, base==0, base>reserves, mayhem,
+  err599) between the sell `transfer_quote_out` and the accrue join, and makes `complete_fill` the
+  fallthrough of the whitelist memcmp; ours lets the sell chain fall into accrue_fees and the memcmp
+  fall into err599.
+- The orig 64-byte arm-result copy at the accrue join (ours copies less: SROA splits the tuple).
 - post_complete_buy_event call block placed before the HopOutput block in orig, after the
   `From<ProgramError>` error block in ours.
 - admit_vaults: orig copies the curve key once and reuses it (see ck1), but binding it moves the
