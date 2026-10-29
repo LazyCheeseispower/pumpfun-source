@@ -189,6 +189,8 @@ export class PostStore {
     // The store documents deterministic read-only data: snapshot the seed so
     // caller-owned rows (and the shared default seed) cannot corrupt later reads.
     this.posts = structuredClone(seed ?? (seedData as RawPost[]));
+    if (this.posts.some(post => typeof post.postId !== 'string' || post.postId === ''))
+      throw new TypeError('Post identity must be non-empty');
     if (new Set(this.posts.map(p => p.postId)).size !== this.posts.length) throw new TypeError('Duplicate post identity');
     this.byPostId = new Map(this.posts.map(p => [p.postId, p]));
     this.userStore = userStore ?? defaultStore;
