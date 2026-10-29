@@ -21,7 +21,7 @@ export function registerSearchResolveRoutes(app: FastifyInstance, store: UserSto
     // Repeated and mixed comma forms are explicitly equivalent. Do not trim,
     // normalize or deduplicate: each identifier is echoed verbatim in request order.
     const identifiers = query.getAll('identifiers').flatMap(value => value.split(','));
-    if (identifiers.length < 1 || identifiers.length > 5 || identifiers.some(id => id.length > 128)) {
+    if (identifiers.length < 1 || identifiers.length > 5 || identifiers.some(id => [...id].length > 128)) {
       return reply.code(400).send(errorBody(400, 'INVALID_QUERY'));
     }
     const results: Resolution['results'] = [];
